@@ -1,0 +1,164 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+import pandas as pd
+import time
+import sqlite3
+import pygsheets
+
+#Spotify API access. Uncomment these variables with your own client ID and Secret
+#client_id = 'insert client ID here'
+#client_secret = #'insert client secret here'
+
+client_credentials_manager = SpotifyClientCredentials(client_id, client_secret)
+sp = spotipy.Spotify(client_credentials_manager = client_credentials_manager)
+
+urn = 'spotify:artist:1UqUzN8vF7aFY6ImjHv3uM' #Jay Fiddy ID for testing
+
+#Add artist IDs to this list. Once added, run entire script and data will update w/ new artist data. 
+
+artist_ids = ['spotify:artist:1UqUzN8vF7aFY6ImjHv3uM', #Jay Fiddy
+              'spotify:artist:6ngvfOGPi0GgIdXEj9FRrP', #Thom Joseph
+              'spotify:artist:3ZgjnL0MKJVE14HBt9nwmc'] #Barrett Staples
+
+
+def getTracks(artist_id):
+    album_ids = []
+    artist_albums = sp.artist_albums(artist_id)
+    for item in artist_albums['items']:
+        album_ids.append(item['id'])
+    all_songs = sp.albums(album_ids)
+    track_ids = []
+    for album_id in range(len(all_songs['albums'])):
+        for track_id in range(len(all_songs['albums'][album_id]['tracks']['items'])):
+            track_ids.append(all_songs['albums'][album_id]['tracks']['items'][track_id]['id'])
+    return track_ids
+
+def getArtistFeatures(artist_id):
+    meta = sp.artist(artist_id)
+    
+    #metadata
+    artist_id = meta['id']
+    name = meta['name']
+    followers = meta['followers']['total']
+    popularity = meta['popularity']
+    uri = meta['external_urls']['spotify']
+    
+    artist = [artist_id, name, followers, popularity, uri]
+    return artist
+
+def getTrackFeatures(id):
+    meta = sp.track(id)
+    features = sp.audio_features(id)
+    
+    # meta
+    name = meta['name']
+    album = meta['album']['name']
+    #Below loop handles featured artists on songs, 
+    #since multiple artists JSON blobs are sent and must be looped through into one value
+    if len(meta['artists']) > 1:
+        values = []
+        for i in meta['artists']:
+            for (k,v) in i.items():
+                if k == 'name':
+                    values.append(v)
+
+        artist = ", ".join(values)
+    else: 
+        artist = meta['album']['artists'][0]['name']
+    artist_id = meta['album']['artists'][0]['name']
+    release_date = meta['album']['release_date']
+    length = meta['duration_ms']
+    popularity = meta['popularity']
+
+    # features
+    acousticness = features[0]['acousticness']
+    danceability = features[0]['danceability']
+    energy = features[0]['energy']
+    instrumentalness = features[0]['instrumentalness']
+    liveness = features[0]['liveness']
+    loudness = features[0]['loudness']
+    speechiness = features[0]['speechiness']
+    tempo = features[0]['tempo']
+    time_signature = features[0]['time_signature']
+    
+    track = [name, album, artist, release_date, length, popularity, danceability, acousticness, danceability, energy, instrumentalness, liveness, loudness, speechiness, tempo, time_signature]
+    return track
+
+track_ids = []
+for j in artist_ids:
+    track = getTracks(j)
+    track_ids.append(track)
+    
+track_ids
+
+flat_list = []
+for sublist in track_ids:
+    for item in sublist:
+        flat_list.append(item)
+
+flat_list
+
+tracks = []
+for i in flat_list:
+  time.sleep(.5)
+  track = getTrackFeatures(i)
+  tracks.append(track)
+    
+df = pd.DataFrame(tracks, columns = ['name', 'album', 'artist', 'release_date', 'length', 'popularity', 'danceability', 'acousticness', 'danceability', 'energy', 'instrumentalness', 'liveness', 'loudness', 'speechiness', 'tempo', 'time_signature'])
+df = df.loc[:,~df.columns.duplicated()] ##removes duplicate danceability column
+df
+
+#Get Artist metadata for dashboard
+
+artists = []
+for i in artist_ids:
+  time.sleep(.5)
+  artist = getArtistFeatures(i)
+  artists.append(artist)
+
+artists_df = pd.DataFrame(artists, columns = ['artist_id', 'name', 'followers', 'popularity', 'uri'])
+artists_df
+
+#Export to .csv for local manipulation. Not a necessary for final dashboard and can be commented out
+df.to_csv('spotify_api_data.csv', sep = ',', index=False)
+artists_df.to_csv('spotify_artist_data.csv', sep = ',', index=False)
+
+#Export to Google Sheets
+
+#Authenticate in to Google Sheets
+#Guide here: https://ivizri.com/posts/2020/04/automating-a-tableau-public-dashboard/
+gc = pygsheets.authorize(service_file='c://users/filepath/json') #add your own local filepath here
+wb = gc.open('spotify_api_data')
+
+#Managing two separate Google Sheets for Tableau Publich dashboard data: track metadata and artist metadata. 
+#No major reason for why, just ended up this way. Could use same sheet and two different tabs
+#IDs for featured artists make it difficult to join the two tables, so parameter tricks are used in Tableau instead of merging dataframes
+sheet = wb.worksheet_by_title(f'spotify_api_data')
+sheet.clear()
+sheet.set_dataframe(df, (1,1))
+
+artist_wb = gc.open('spotify_artist_data')
+artist_sheet = artist_wb.worksheet_by_title(f'Sheet1')
+artist_sheet.clear()
+artist_sheet.set_dataframe(artists_df, (1,1))
+
+##Send tracks DF to sqlite3 DB
+
+conn = sqlite3.connect('label_x_spotify_db')
+c = conn.cursor()
+
+c.execute('CREATE TABLE IF NOT EXISTS tracks (name text, album text, artist text, release_date text, length number, popularity number, danceability number, acousticness number, energy number, instrumentalness number, liveness number, loudness number, speechiness number, tempo number, time_signature number)')
+conn.commit()
+
+df.to_sql('tracks', conn, if_exists='replace', index = False)
+
+c.execute('''  
+SELECT * FROM tracks
+          ''')
+
+for row in c.fetchall():
+    print (row)
+
